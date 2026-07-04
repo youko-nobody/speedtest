@@ -223,9 +223,6 @@ http://speedtest1.serverius.net/files/2000mb.bin
 http://speedtest2.serverius.net/files/1000mb.bin
 http://speedtest3.serverius.net/files/1000mb.bin
 
-# Liquid Web official test file
-https://lg.liquidweb.com/static/files/1000mb.bin
-
 # BelWue speed-test files listed by IP-Toolbox
 http://speedtest.belwue.net/100M
 http://speedtest.belwue.net/1G

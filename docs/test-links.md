@@ -66,7 +66,6 @@ The script also includes official/test-file endpoints from:
 - [VelociHOST Network Speed Test](https://www.velocihost.net/network-speed-test/)
 - [BITel Speedtest](https://speedtest.bitel.io/)
 - [Serverius Speedtest](https://speedtest.serverius.net/)
-- [Liquid Web Looking Glass](https://www.liquidweb.com/help-docs/performance/server-optimization/testing-your-networks-speed-and-reliability/)
 
 ## Avoid For Automation
 
