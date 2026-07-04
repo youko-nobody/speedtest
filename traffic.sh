@@ -464,11 +464,48 @@ sleep_between() {
 sleep_after_error() {
   local seconds="${ERROR_SLEEP:-5}"
   [[ "$seconds" =~ ^[0-9]+$ ]] || seconds=5
+  if [ "$seconds" -eq 0 ] && { [ "${SELECT_EVERY_SECONDS:-0}" -gt 0 ] 2>/dev/null || [ -n "${STOP_AT:-}" ]; }; then
+    seconds=1
+  fi
   [ "$seconds" -gt 0 ] && sleep "$seconds"
 }
 
 time_reached() {
   [ -n "${STOP_AT:-}" ] && [ "$(date +%s)" -ge "$STOP_AT" ]
+}
+
+positive_min() {
+  local min="" value
+  for value in "$@"; do
+    if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -gt 0 ]; then
+      if [ -z "$min" ] || [ "$value" -lt "$min" ]; then
+        min="$value"
+      fi
+    fi
+  done
+  [ -n "$min" ] && printf '%s\n' "$min"
+}
+
+slot_remaining_seconds() {
+  local now remaining stop_remaining select_remaining current_slot next_slot
+  now="$(date +%s)"
+
+  if [ -n "${STOP_AT:-}" ]; then
+    stop_remaining=$((STOP_AT - now))
+  else
+    stop_remaining=""
+  fi
+
+  if [ "${SELECT_EVERY_SECONDS:-0}" -gt 0 ] 2>/dev/null; then
+    current_slot=$((now / SELECT_EVERY_SECONDS))
+    next_slot=$(((current_slot + 1) * SELECT_EVERY_SECONDS))
+    select_remaining=$((next_slot - now))
+  else
+    select_remaining=""
+  fi
+
+  remaining="$(positive_min "${REQUEST_TIMEOUT:-0}" "$stop_remaining" "$select_remaining")"
+  [ -n "$remaining" ] && printf '%s\n' "$remaining"
 }
 
 curl_download() {
@@ -477,11 +514,14 @@ curl_download() {
   local timeout_args=()
   local rate_args=()
   local retry_args=()
-  local output status bytes tmp err pipe_status
+  local output status bytes tmp err pipe_status effective_timeout
 
-  [ "${REQUEST_TIMEOUT:-0}" -gt 0 ] 2>/dev/null && timeout_args=(--max-time "$REQUEST_TIMEOUT")
+  effective_timeout="$(slot_remaining_seconds || true)"
+  [ -n "$effective_timeout" ] && timeout_args=(--max-time "$effective_timeout")
   [ -n "$RATE_LIMIT" ] && rate_args=(--limit-rate "$RATE_LIMIT")
-  [ "${RETRIES:-0}" -gt 0 ] 2>/dev/null && retry_args=(--retry "$RETRIES" --retry-delay 2)
+  if [ -z "$effective_timeout" ] && [ "${RETRIES:-0}" -gt 0 ] 2>/dev/null; then
+    retry_args=(--retry "$RETRIES" --retry-delay 2)
+  fi
 
   if [ -n "$remaining" ] && [ "$remaining" -gt 0 ]; then
     tmp="$STATE_DIR/.curl-bytes.$$.$RANDOM"
@@ -495,6 +535,10 @@ curl_download() {
     bytes="$(tr -dc '0-9' < "$tmp" 2>/dev/null || printf '0')"
     rm -f "$tmp"
     if [ "$pipe_status" -ne 0 ] && [ "$pipe_status" -ne 23 ]; then
+      if [ "$bytes" -gt 0 ]; then
+        counter_add "$bytes"
+        log "download partial tool=curl status=$pipe_status bytes=$bytes total=$(counter_read) url=$url"
+      fi
       log "download failed tool=curl url=$url status=$pipe_status"
       [ -s "$err" ] && sed 's/^/[curl] /' "$err" >> "$LOG_FILE"
       rm -f "$err"
@@ -506,17 +550,24 @@ curl_download() {
     return 0
   fi
 
-  output="$(curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" -o /dev/null -w '%{http_code} %{size_download}' "$url" 2>&1)"
+  err="$STATE_DIR/.curl-error.$$.$RANDOM"
+  output="$(curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" -o /dev/null -w '%{http_code} %{size_download}' "$url" 2> "$err")"
   status=$?
   bytes="$(printf '%s\n' "$output" | awk '{print $NF}')"
   [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
   if [ "$status" -ne 0 ]; then
     if [ "$bytes" -gt 0 ]; then
       counter_add "$bytes"
+      log "download partial tool=curl status=$status bytes=$bytes total=$(counter_read) url=$url"
+      rm -f "$err"
+      return 0
     fi
     log "download failed tool=curl url=$url error=$output"
+    [ -s "$err" ] && sed 's/^/[curl] /' "$err" >> "$LOG_FILE"
+    rm -f "$err"
     return 1
   fi
+  rm -f "$err"
   counter_add "$bytes"
   log "download ok bytes=$bytes total=$(counter_read) url=$url"
 }
@@ -529,9 +580,13 @@ wget_download() {
   local tries_args=()
   local tmp err pipe_status bytes
 
-  [ "${REQUEST_TIMEOUT:-0}" -gt 0 ] 2>/dev/null && timeout_args=(--timeout="$REQUEST_TIMEOUT")
+  local effective_timeout
+  effective_timeout="$(slot_remaining_seconds || true)"
+  [ -n "$effective_timeout" ] && timeout_args=(--timeout="$effective_timeout")
   [ -n "$RATE_LIMIT" ] && rate_args=(--limit-rate="$RATE_LIMIT")
-  [ "${RETRIES:-0}" -gt 0 ] 2>/dev/null && tries_args=(--tries="$((RETRIES + 1))")
+  if [ -z "$effective_timeout" ] && [ "${RETRIES:-0}" -gt 0 ] 2>/dev/null; then
+    tries_args=(--tries="$((RETRIES + 1))")
+  fi
 
   if [ -n "$remaining" ] && [ "$remaining" -gt 0 ]; then
     tmp="$STATE_DIR/.wget-bytes.$$.$RANDOM"
