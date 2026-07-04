@@ -76,7 +76,8 @@ Commands:
   start       Save config and run in background.
   random-minute
               In the next 5 minutes, randomly choose one 60-second slot,
-              then randomly choose one download URL and run it in background.
+              then randomly choose one download URL and keep running only
+              that URL for the whole slot.
   stop        Stop the background process and all workers.
   status      Show PID, log path, and transferred byte counter.
   tail        Follow the log file.

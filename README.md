@@ -4,7 +4,7 @@
 
 ## 一键随机跑 1 分钟
 
-下面这一行会下载脚本，并在接下来的 5 分钟内随机抽取其中 1 分钟，随机抽取 1 个官方测速链接来跑流量：
+下面这一行会下载脚本，并在接下来的 5 分钟内随机抽取其中 1 分钟，随机抽取 1 个官方测速链接，然后只持续跑这个链接 60 秒：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh random-minute --preset official --window-seconds 300 --run-seconds 60

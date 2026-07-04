@@ -18,7 +18,7 @@ wget -O traffic.sh https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/
 
 ## One-Line Random Minute
 
-Download the script and schedule one random 60-second run within the next 5 minutes, using one randomly selected official speed-test URL:
+Download the script and schedule one random 60-second run within the next 5 minutes. It randomly selects one official speed-test URL, then keeps running only that URL for the full 60 seconds:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh random-minute --preset official --window-seconds 300 --run-seconds 60
