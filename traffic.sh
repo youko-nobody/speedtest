@@ -511,7 +511,7 @@ curl_download() {
   local timeout_args=()
   local rate_args=()
   local retry_args=()
-  local output status bytes tmp err pipe_status effective_timeout
+  local bytes tmp err pipe_status effective_timeout
 
   effective_timeout="$(slot_remaining_seconds || true)"
   [ -n "$effective_timeout" ] && timeout_args=(--max-time "$effective_timeout")
@@ -520,50 +520,36 @@ curl_download() {
     retry_args=(--retry "$RETRIES" --retry-delay 2)
   fi
 
+  tmp="$STATE_DIR/.curl-bytes.$$.$RANDOM"
+  err="$STATE_DIR/.curl-error.$$.$RANDOM"
+  set +o pipefail
   if [ -n "$remaining" ] && [ "$remaining" -gt 0 ]; then
-    tmp="$STATE_DIR/.curl-bytes.$$.$RANDOM"
-    err="$STATE_DIR/.curl-error.$$.$RANDOM"
-    set +o pipefail
     curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" "$url" 2> "$err" \
       | head -c "$remaining" \
       | wc -c > "$tmp"
-    pipe_status="${PIPESTATUS[0]}"
-    set -o pipefail
-    bytes="$(tr -dc '0-9' < "$tmp" 2>/dev/null || printf '0')"
-    rm -f "$tmp"
-    if [ "$pipe_status" -ne 0 ] && [ "$pipe_status" -ne 23 ]; then
-      if [ "$bytes" -gt 0 ]; then
-        counter_add "$bytes"
-        log "download partial tool=curl status=$pipe_status bytes=$bytes total=$(counter_read) url=$url"
-      fi
-      log "download failed tool=curl url=$url status=$pipe_status"
-      [ -s "$err" ] && sed 's/^/[curl] /' "$err" >> "$LOG_FILE"
-      rm -f "$err"
-      return 1
-    fi
-    rm -f "$err"
-    counter_add "$bytes"
-    log "download ok bytes=$bytes total=$(counter_read) url=$url"
-    return 0
+  else
+    curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" "$url" 2> "$err" \
+      | wc -c > "$tmp"
   fi
-
-  err="$STATE_DIR/.curl-error.$$.$RANDOM"
-  output="$(curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" -o /dev/null -w '%{http_code} %{size_download}' "$url" 2> "$err")"
-  status=$?
-  bytes="$(printf '%s\n' "$output" | awk '{print $NF}')"
+  pipe_status="${PIPESTATUS[0]}"
+  set -o pipefail
+  bytes="$(tr -dc '0-9' < "$tmp" 2>/dev/null || printf '0')"
+  rm -f "$tmp"
   [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
-  if [ "$status" -ne 0 ]; then
+
+  if [ "$pipe_status" -ne 0 ] && [ "$pipe_status" -ne 23 ]; then
     if [ "$bytes" -gt 0 ]; then
       counter_add "$bytes"
-      log "download partial tool=curl status=$status bytes=$bytes total=$(counter_read) url=$url"
+      log "download partial tool=curl status=$pipe_status bytes=$bytes total=$(counter_read) url=$url"
       rm -f "$err"
       return 0
     fi
-    log "download failed tool=curl url=$url error=$output"
+    log "download failed tool=curl url=$url status=$pipe_status"
     [ -s "$err" ] && sed 's/^/[curl] /' "$err" >> "$LOG_FILE"
     rm -f "$err"
     return 1
   fi
+
   rm -f "$err"
   counter_add "$bytes"
   log "download ok bytes=$bytes total=$(counter_read) url=$url"
