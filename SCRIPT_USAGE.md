@@ -32,6 +32,12 @@ Check the scheduled job:
 ./traffic.sh stop
 ```
 
+One-line stop command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh stop
+```
+
 ## Start In Background
 
 ```bash

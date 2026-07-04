@@ -18,6 +18,12 @@ curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic
 ./traffic.sh stop
 ```
 
+一键停止脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh stop
+```
+
 它可以把你之前这种单链接循环：
 
 ```bash
