@@ -16,6 +16,22 @@ If the VPS does not have curl:
 wget -O traffic.sh https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/traffic.sh && chmod +x traffic.sh
 ```
 
+## One-Line Random Minute
+
+Download the script and schedule one random 60-second run within the next 5 minutes, using one randomly selected official speed-test URL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh random-minute --preset official --window-seconds 300 --run-seconds 60
+```
+
+Check the scheduled job:
+
+```bash
+./traffic.sh status
+./traffic.sh tail
+./traffic.sh stop
+```
+
 ## Start In Background
 
 ```bash

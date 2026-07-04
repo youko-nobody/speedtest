@@ -2,6 +2,22 @@
 
 一个用于**授权场景**的 VPS 流量消耗/带宽压测工具。主入口是零安装 Bash 脚本 [traffic.sh](traffic.sh)：上传到 GitHub 后，VPS 上拉下来就能后台跑，另一个命令一键停。
 
+## 一键随机跑 1 分钟
+
+下面这一行会下载脚本，并在接下来的 5 分钟内随机抽取其中 1 分钟，随机抽取 1 个官方测速链接来跑流量：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh random-minute --preset official --window-seconds 300 --run-seconds 60
+```
+
+查看状态、日志、停止：
+
+```bash
+./traffic.sh status
+./traffic.sh tail
+./traffic.sh stop
+```
+
 它可以把你之前这种单链接循环：
 
 ```bash
@@ -35,7 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/tra
 wget -O traffic.sh https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/traffic.sh && chmod +x traffic.sh
 ```
 
-## 一行启动
+## 一行持续启动
 
 ```bash
 ./traffic.sh start --preset official --schedule random --concurrency 4 --interval 60 --jitter 10 --max-bytes 20G
@@ -100,6 +116,8 @@ MAX_BYTES=50G \
 | `JITTER` / `--jitter` | 每轮请求后的随机额外秒数 |
 | `MAX_BYTES` / `--max-bytes` | 总流量上限，例如 `20G` |
 | `MAX_SECONDS` / `--max-seconds` | 运行秒数上限 |
+| `RANDOM_WINDOW_SECONDS` / `--window-seconds` | `random-minute` 的随机窗口，默认 `300` |
+| `RANDOM_RUN_SECONDS` / `--run-seconds` | `random-minute` 的单次运行时长，默认 `60` |
 | `RATE_LIMIT` / `--rate-limit` | 单 worker 限速，例如 `20M` |
 | `UPLOAD_CHUNK` / `--upload-chunk` | 每次上传的请求体大小，例如 `64M` |
 | `LOG_FILE` / `--log` | 日志路径 |

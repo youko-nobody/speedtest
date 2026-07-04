@@ -41,6 +41,9 @@ UPLOAD_RANDOM="${UPLOAD_RANDOM:-0}"
 USER_AGENT="${USER_AGENT:-traffic-burner/1.0}"
 RETRIES="${RETRIES:-1}"
 ERROR_SLEEP="${ERROR_SLEEP:-5}"
+RANDOM_WINDOW_SECONDS="${RANDOM_WINDOW_SECONDS:-300}"
+RANDOM_RUN_SECONDS="${RANDOM_RUN_SECONDS:-60}"
+RANDOM_START_DELAY="${RANDOM_START_DELAY:-0}"
 
 usage() {
   cat <<'EOF'
@@ -48,6 +51,7 @@ traffic.sh - zero-install VPS traffic runner
 
 Usage:
   ./traffic.sh start [options]
+  ./traffic.sh random-minute [options]
   ./traffic.sh stop
   ./traffic.sh status
   ./traffic.sh tail
@@ -70,6 +74,9 @@ Common start examples:
 
 Commands:
   start       Save config and run in background.
+  random-minute
+              In the next 5 minutes, randomly choose one 60-second slot,
+              then randomly choose one download URL and run it in background.
   stop        Stop the background process and all workers.
   status      Show PID, log path, and transferred byte counter.
   tail        Follow the log file.
@@ -90,6 +97,8 @@ Options and env:
   --jitter SECONDS          Extra random sleep after each request. Env: JITTER
   --max-bytes SIZE          Stop after approximate total bytes, e.g. 20G. Env: MAX_BYTES
   --max-seconds SECONDS     Stop after runtime seconds. Env: MAX_SECONDS
+  --window-seconds SECONDS  Random-minute window, default 300. Env: RANDOM_WINDOW_SECONDS
+  --run-seconds SECONDS     Random-minute run length, default 60. Env: RANDOM_RUN_SECONDS
   --rate-limit RATE         Per-worker curl/wget limit, e.g. 20M. Env: RATE_LIMIT
   --timeout SECONDS         Per-request timeout, 0 means no hard timeout. Env: REQUEST_TIMEOUT
   --upload-chunk SIZE       Bytes per upload request, e.g. 64M. Env: UPLOAD_CHUNK
@@ -265,7 +274,8 @@ save_config() {
     STATE_DIR PID_FILE LOG_FILE CONFIG_FILE COUNTER_FILE LOCK_DIR \
     URLS URLS_FILE PRESET UPLOAD_URLS MODE SCHEDULE CONCURRENCY UPLOAD_CONCURRENCY \
     INTERVAL JITTER MAX_BYTES MAX_SECONDS RATE_LIMIT REQUEST_TIMEOUT \
-    UPLOAD_CHUNK UPLOAD_RANDOM USER_AGENT RETRIES ERROR_SLEEP
+    UPLOAD_CHUNK UPLOAD_RANDOM USER_AGENT RETRIES ERROR_SLEEP \
+    RANDOM_WINDOW_SECONDS RANDOM_RUN_SECONDS RANDOM_START_DELAY
   do
     printf '%s=%q\n' "$var" "${!var:-}" >> "$CONFIG_FILE"
   done
@@ -413,6 +423,10 @@ sleep_after_error() {
   [ "$seconds" -gt 0 ] && sleep "$seconds"
 }
 
+time_reached() {
+  [ -n "${STOP_AT:-}" ] && [ "$(date +%s)" -ge "$STOP_AT" ]
+}
+
 curl_download() {
   local url="$1"
   local remaining="${2:-}"
@@ -450,12 +464,15 @@ curl_download() {
 
   output="$(curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" -o /dev/null -w '%{http_code} %{size_download}' "$url" 2>&1)"
   status=$?
+  bytes="$(printf '%s\n' "$output" | awk '{print $NF}')"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
   if [ "$status" -ne 0 ]; then
+    if [ "$bytes" -gt 0 ]; then
+      counter_add "$bytes"
+    fi
     log "download failed tool=curl url=$url error=$output"
     return 1
   fi
-  bytes="$(printf '%s\n' "$output" | awk '{print $NF}')"
-  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
   counter_add "$bytes"
   log "download ok bytes=$bytes total=$(counter_read) url=$url"
 }
@@ -573,13 +590,14 @@ download_worker() {
   local url result
   while true; do
     limit_reached >/dev/null 2>&1 && break
-    if [ -n "${STOP_AT:-}" ] && [ "$(date +%s)" -ge "$STOP_AT" ]; then
+    if time_reached; then
       break
     fi
     url="$(pick_url DOWNLOAD_TARGETS "$worker" "$iter")" || break
     do_download "$url"
     result=$?
     [ "$result" -eq 2 ] && break
+    time_reached && break
     [ "$result" -ne 0 ] && sleep_after_error
     iter=$((iter + 1))
     sleep_between
@@ -593,13 +611,14 @@ upload_worker() {
   local url result
   while true; do
     limit_reached >/dev/null 2>&1 && break
-    if [ -n "${STOP_AT:-}" ] && [ "$(date +%s)" -ge "$STOP_AT" ]; then
+    if time_reached; then
       break
     fi
     url="$(pick_url UPLOAD_TARGETS "$worker" "$iter")" || break
     do_upload "$url"
     result=$?
     [ "$result" -eq 2 ] && break
+    time_reached && break
     [ "$result" -ne 0 ] && sleep_after_error
     iter=$((iter + 1))
     sleep_between
@@ -694,6 +713,71 @@ start_cmd() {
   printf 'started %s pid=%s\nlog=%s\npid_file=%s\n' "$APP_NAME" "$pid" "$LOG_FILE" "$PID_FILE"
 }
 
+random_minute_cmd() {
+  mkdir -p "$STATE_DIR"
+  local pid slots slot
+  pid="$(current_pid)"
+  if is_running "$pid"; then
+    die "already running with PID $pid; use ./traffic.sh stop"
+  fi
+
+  [[ "$RANDOM_WINDOW_SECONDS" =~ ^[0-9]+$ ]] && [ "$RANDOM_WINDOW_SECONDS" -gt 0 ] || die "RANDOM_WINDOW_SECONDS must be positive seconds"
+  [[ "$RANDOM_RUN_SECONDS" =~ ^[0-9]+$ ]] && [ "$RANDOM_RUN_SECONDS" -gt 0 ] || die "RANDOM_RUN_SECONDS must be positive seconds"
+
+  if [ -z "$URLS" ] && [ -z "$URLS_FILE" ] && { [ -z "$PRESET" ] || [ "$PRESET" = "none" ]; }; then
+    PRESET="official"
+  fi
+
+  slots=$((RANDOM_WINDOW_SECONDS / RANDOM_RUN_SECONDS))
+  [ "$slots" -gt 0 ] || slots=1
+  slot=$((RANDOM % slots))
+  RANDOM_START_DELAY=$((slot * RANDOM_RUN_SECONDS))
+
+  save_config
+  printf '0\n' > "$COUNTER_FILE"
+  local script
+  script="$(script_path)"
+  nohup "$script" random-run >> "$LOG_FILE" 2>&1 &
+  pid="$!"
+  printf '%s\n' "$pid" > "$PID_FILE"
+  printf 'scheduled random-minute pid=%s delay=%ss run=%ss\nlog=%s\npid_file=%s\n' "$pid" "$RANDOM_START_DELAY" "$RANDOM_RUN_SECONDS" "$LOG_FILE" "$PID_FILE"
+}
+
+random_window_runner() {
+  local delay="${RANDOM_START_DELAY:-0}"
+  local selected count index
+
+  trap 'log "random-minute stopped before run"; exit 0' TERM INT
+  log "random-minute scheduled delay=${delay}s run=${RANDOM_RUN_SECONDS}s preset=${PRESET:-none} urls_file=${URLS_FILE:-none}"
+  [ "$delay" -gt 0 ] && sleep "$delay"
+
+  validate_config
+  split_urls "$(build_download_urls_text)" RANDOM_TARGETS
+  eval "count=\${#RANDOM_TARGETS[@]}"
+  [ "$count" -gt 0 ] || die "random-minute requires at least one download URL"
+  index=$((RANDOM % count))
+  eval "selected=\"\${RANDOM_TARGETS[$index]}\""
+
+  log "random-minute selected url=$selected"
+  URLS="$selected"
+  URLS_FILE=""
+  PRESET="none"
+  UPLOAD_URLS=""
+  MODE="download"
+  SCHEDULE="round-robin"
+  CONCURRENCY=1
+  UPLOAD_CONCURRENCY=1
+  MAX_SECONDS="$RANDOM_RUN_SECONDS"
+  INTERVAL=0
+  JITTER=0
+  if [ -z "$REQUEST_TIMEOUT" ] || [ "$REQUEST_TIMEOUT" = "0" ] || [ "$REQUEST_TIMEOUT" -gt "$RANDOM_RUN_SECONDS" ] 2>/dev/null; then
+    REQUEST_TIMEOUT="$RANDOM_RUN_SECONDS"
+  fi
+
+  trap stop_children TERM INT
+  runner
+}
+
 stop_cmd() {
   local pid
   pid="$(current_pid)"
@@ -755,6 +839,8 @@ parse_args() {
       --jitter) JITTER="${2:-}"; shift 2 ;;
       --max-bytes) MAX_BYTES="${2:-}"; shift 2 ;;
       --max-seconds) MAX_SECONDS="${2:-}"; shift 2 ;;
+      --window-seconds) RANDOM_WINDOW_SECONDS="${2:-}"; shift 2 ;;
+      --run-seconds) RANDOM_RUN_SECONDS="${2:-}"; shift 2 ;;
       --rate-limit) RATE_LIMIT="${2:-}"; shift 2 ;;
       --timeout) REQUEST_TIMEOUT="${2:-}"; shift 2 ;;
       --upload-chunk) UPLOAD_CHUNK="${2:-}"; shift 2 ;;
@@ -786,11 +872,13 @@ main() {
 
   case "$cmd" in
     start) start_cmd ;;
+    random-minute) random_minute_cmd ;;
     stop) stop_cmd ;;
     status) status_cmd ;;
     tail) tail_cmd ;;
     links) links_cmd ;;
     run) load_config; runner ;;
+    random-run) load_config; random_window_runner ;;
     once) runner ;;
     help|-h|--help) usage ;;
     version|--version) printf '%s\n' "$VERSION" ;;
