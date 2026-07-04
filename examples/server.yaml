@@ -1,0 +1,6 @@
+host: 0.0.0.0
+port: 8080
+token: CHANGE_ME
+chunkBytes: 1mb
+maxUploadBytes: 20gb
+readTimeoutMs: 120000

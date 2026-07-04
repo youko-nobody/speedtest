@@ -1,0 +1,38 @@
+{
+  "name": "vps-traffic-burner",
+  "version": "1.0.0",
+  "description": "Authorized VPS traffic generator with multi-target scheduling, download/upload modes, limits, and a self-hosted test server.",
+  "type": "module",
+  "bin": {
+    "tb": "./dist/cli.js",
+    "traffic-burner": "./dist/cli.js"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "test": "node --test --import tsx test/*.test.ts",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "vps",
+    "traffic",
+    "bandwidth",
+    "speedtest",
+    "load-test"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^14.0.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20.11"
+  }
+}

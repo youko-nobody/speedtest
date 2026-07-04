@@ -1,0 +1,27 @@
+schedule: random
+concurrency: 4
+intervalMs: 1000
+jitterMs: 2000
+requestTimeoutMs: 120000
+maxBytes: 20gb
+rateLimit: 80mb/s
+uploadRequestBytes: 512mb
+logEveryMs: 5000
+targets:
+  - name: leaseweb-1000mb
+    url: https://speedtest.ams1.nl.leaseweb.net/1000mb.bin
+    mode: download
+    downloadOnly: true
+    weight: 2
+
+  - name: ovh-1gb
+    url: https://proof.ovh.net/files/1Gb.dat
+    mode: download
+    downloadOnly: true
+    weight: 1
+
+  - name: my-vps
+    url: http://YOUR_VPS_IP:8080
+    token: CHANGE_ME
+    mode: both
+    weight: 1

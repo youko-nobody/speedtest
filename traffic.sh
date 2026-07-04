@@ -1,0 +1,675 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+APP_NAME="traffic-burner"
+VERSION="1.0.0"
+
+PID_FILE_ENV="${PID_FILE:-}"
+LOG_FILE_ENV="${LOG_FILE:-}"
+CONFIG_FILE_ENV="${CONFIG_FILE:-}"
+COUNTER_FILE_ENV="${COUNTER_FILE:-}"
+LOCK_DIR_ENV="${LOCK_DIR:-}"
+
+STATE_DIR="${STATE_DIR:-${HOME:-/tmp}/.traffic-burner}"
+PID_FILE="${PID_FILE:-$STATE_DIR/traffic.pid}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/traffic.log}"
+CONFIG_FILE="${CONFIG_FILE:-$STATE_DIR/config.env}"
+COUNTER_FILE="${COUNTER_FILE:-$STATE_DIR/bytes.count}"
+LOCK_DIR="${LOCK_DIR:-$STATE_DIR/lock}"
+PID_FILE_ARG=0
+LOG_FILE_ARG=0
+CONFIG_FILE_ARG=0
+COUNTER_FILE_ARG=0
+LOCK_DIR_ARG=0
+
+URLS="${URLS:-}"
+UPLOAD_URLS="${UPLOAD_URLS:-}"
+MODE="${MODE:-auto}"
+SCHEDULE="${SCHEDULE:-round-robin}"
+CONCURRENCY="${CONCURRENCY:-2}"
+UPLOAD_CONCURRENCY="${UPLOAD_CONCURRENCY:-1}"
+INTERVAL="${INTERVAL:-60}"
+JITTER="${JITTER:-0}"
+MAX_BYTES="${MAX_BYTES:-}"
+MAX_SECONDS="${MAX_SECONDS:-}"
+RATE_LIMIT="${RATE_LIMIT:-}"
+REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-0}"
+UPLOAD_CHUNK="${UPLOAD_CHUNK:-64M}"
+UPLOAD_RANDOM="${UPLOAD_RANDOM:-0}"
+USER_AGENT="${USER_AGENT:-traffic-burner/1.0}"
+RETRIES="${RETRIES:-1}"
+ERROR_SLEEP="${ERROR_SLEEP:-5}"
+
+usage() {
+  cat <<'EOF'
+traffic.sh - zero-install VPS traffic runner
+
+Usage:
+  ./traffic.sh start [options]
+  ./traffic.sh stop
+  ./traffic.sh status
+  ./traffic.sh tail
+  ./traffic.sh run
+  ./traffic.sh once [options]
+
+Common start examples:
+  URLS="https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/files/1Gb.dat" \
+    CONCURRENCY=4 INTERVAL=60 ./traffic.sh start
+
+  ./traffic.sh start \
+    --urls "https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/files/1Gb.dat" \
+    --schedule random \
+    --concurrency 4 \
+    --interval 60 \
+    --max-bytes 20G
+
+  UPLOAD_URLS="https://your-domain.example/upload" MODE=both ./traffic.sh start --urls "https://your-domain.example/file.bin"
+
+Commands:
+  start       Save config and run in background.
+  stop        Stop the background process and all workers.
+  status      Show PID, log path, and transferred byte counter.
+  tail        Follow the log file.
+  run         Internal foreground runner used by start.
+  once        Run in foreground until stopped or limits are reached.
+
+Options and env:
+  --urls VALUE              Download URLs, separated by spaces, commas, or newlines. Env: URLS
+  --upload-urls VALUE       Upload endpoints for POST body traffic. Env: UPLOAD_URLS
+  --mode VALUE              auto, download, upload, both. Env: MODE
+  --schedule VALUE          round-robin or random. Env: SCHEDULE
+  --concurrency N           Download workers. Env: CONCURRENCY
+  --upload-concurrency N    Upload workers. Env: UPLOAD_CONCURRENCY
+  --interval SECONDS        Sleep after each request. Env: INTERVAL
+  --jitter SECONDS          Extra random sleep after each request. Env: JITTER
+  --max-bytes SIZE          Stop after approximate total bytes, e.g. 20G. Env: MAX_BYTES
+  --max-seconds SECONDS     Stop after runtime seconds. Env: MAX_SECONDS
+  --rate-limit RATE         Per-worker curl/wget limit, e.g. 20M. Env: RATE_LIMIT
+  --timeout SECONDS         Per-request timeout, 0 means no hard timeout. Env: REQUEST_TIMEOUT
+  --upload-chunk SIZE       Bytes per upload request, e.g. 64M. Env: UPLOAD_CHUNK
+  --upload-random 0|1       Use /dev/urandom instead of /dev/zero. Env: UPLOAD_RANDOM
+  --error-sleep SECONDS     Sleep after a failed request. Env: ERROR_SLEEP
+  --log FILE                Log file path. Env: LOG_FILE
+  --pid FILE                PID file path. Env: PID_FILE
+
+Notes:
+  Public speed-test file URLs should be used for download only.
+  Upload traffic requires endpoints you control and permit to receive POST bodies.
+EOF
+}
+
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+script_path() {
+  local src="$0"
+  if [ -L "$src" ]; then
+    src="$(readlink "$src")"
+  fi
+  case "$src" in
+    /*) printf '%s\n' "$src" ;;
+    *) printf '%s/%s\n' "$(pwd -P)" "$src" ;;
+  esac
+}
+
+normalize_list() {
+  printf '%s\n' "$1" | tr ',\n\t' '   '
+}
+
+parse_size() {
+  local raw="${1:-}"
+  local value unit
+  raw="${raw// /}"
+  raw="${raw^^}"
+  raw="${raw%B}"
+  [ -n "$raw" ] || return 1
+
+  case "$raw" in
+    *K) unit=1024; value="${raw%K}" ;;
+    *M) unit=$((1024 * 1024)); value="${raw%M}" ;;
+    *G) unit=$((1024 * 1024 * 1024)); value="${raw%G}" ;;
+    *T) unit=$((1024 * 1024 * 1024 * 1024)); value="${raw%T}" ;;
+    *) unit=1; value="$raw" ;;
+  esac
+
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$((value * unit))"
+}
+
+human_bytes() {
+  local bytes="${1:-0}"
+  if have awk; then
+    awk -v b="$bytes" 'BEGIN {
+      split("B KiB MiB GiB TiB", u, " ");
+      i=1;
+      while (b >= 1024 && i < 5) { b /= 1024; i++ }
+      if (i == 1) printf "%d %s", b, u[i]; else printf "%.2f %s", b, u[i]
+    }'
+  else
+    printf '%s B' "$bytes"
+  fi
+}
+
+save_config() {
+  mkdir -p "$STATE_DIR"
+  : > "$CONFIG_FILE"
+  local var
+  for var in \
+    STATE_DIR PID_FILE LOG_FILE CONFIG_FILE COUNTER_FILE LOCK_DIR \
+    URLS UPLOAD_URLS MODE SCHEDULE CONCURRENCY UPLOAD_CONCURRENCY \
+    INTERVAL JITTER MAX_BYTES MAX_SECONDS RATE_LIMIT REQUEST_TIMEOUT \
+    UPLOAD_CHUNK UPLOAD_RANDOM USER_AGENT RETRIES ERROR_SLEEP
+  do
+    printf '%s=%q\n' "$var" "${!var:-}" >> "$CONFIG_FILE"
+  done
+}
+
+load_config() {
+  [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE"
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+}
+
+is_running() {
+  local pid="${1:-}"
+  [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+current_pid() {
+  [ -f "$PID_FILE" ] && tr -d '[:space:]' < "$PID_FILE"
+}
+
+with_lock() {
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    sleep 0.05
+  done
+  "$@"
+  local status=$?
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+  return "$status"
+}
+
+counter_init() {
+  mkdir -p "$STATE_DIR"
+  local value=""
+  [ -f "$COUNTER_FILE" ] && value="$(tr -dc '0-9' < "$COUNTER_FILE" 2>/dev/null || true)"
+  if [ -z "$value" ]; then
+    printf '0\n' > "$COUNTER_FILE"
+  fi
+}
+
+counter_read() {
+  local value=""
+  [ -f "$COUNTER_FILE" ] && value="$(tr -dc '0-9' < "$COUNTER_FILE" 2>/dev/null || true)"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '0'
+  fi
+}
+
+counter_add_unlocked() {
+  local add="${1:-0}"
+  local old new
+  old="$(counter_read)"
+  new="$((old + add))"
+  printf '%s\n' "$new" > "$COUNTER_FILE"
+}
+
+counter_add() {
+  with_lock counter_add_unlocked "$1"
+}
+
+max_bytes_value() {
+  [ -n "$MAX_BYTES" ] || return 1
+  parse_size "$MAX_BYTES"
+}
+
+remaining_bytes() {
+  local max used
+  max="$(max_bytes_value)" || return 1
+  used="$(counter_read)"
+  if [ "$used" -ge "$max" ]; then
+    printf '0\n'
+  else
+    printf '%s\n' "$((max - used))"
+  fi
+}
+
+limit_reached() {
+  local max used
+  max="$(max_bytes_value)" || return 1
+  used="$(counter_read)"
+  [ "$used" -ge "$max" ]
+}
+
+split_urls() {
+  local input="$1"
+  local array_name="$2"
+  local item
+  eval "$array_name=()"
+  # shellcheck disable=SC2206
+  local parts=( $(normalize_list "$input") )
+  for item in "${parts[@]}"; do
+    [ -n "$item" ] && eval "$array_name+=(\"\$item\")"
+  done
+}
+
+pick_url() {
+  local array_name="$1"
+  local worker="$2"
+  local iter="$3"
+  local count index
+  eval "count=\${#$array_name[@]}"
+  [ "$count" -gt 0 ] || return 1
+
+  if [ "$SCHEDULE" = "random" ]; then
+    index=$((RANDOM % count))
+  else
+    index=$(((worker + iter) % count))
+  fi
+  eval "printf '%s\n' \"\${$array_name[$index]}\""
+}
+
+sleep_between() {
+  local extra=0
+  if [ "${JITTER:-0}" -gt 0 ] 2>/dev/null; then
+    extra=$((RANDOM % (JITTER + 1)))
+  fi
+  sleep "$((INTERVAL + extra))"
+}
+
+sleep_after_error() {
+  local seconds="${ERROR_SLEEP:-5}"
+  [[ "$seconds" =~ ^[0-9]+$ ]] || seconds=5
+  [ "$seconds" -gt 0 ] && sleep "$seconds"
+}
+
+curl_download() {
+  local url="$1"
+  local remaining="${2:-}"
+  local timeout_args=()
+  local rate_args=()
+  local retry_args=()
+  local output status bytes tmp err pipe_status
+
+  [ "${REQUEST_TIMEOUT:-0}" -gt 0 ] 2>/dev/null && timeout_args=(--max-time "$REQUEST_TIMEOUT")
+  [ -n "$RATE_LIMIT" ] && rate_args=(--limit-rate "$RATE_LIMIT")
+  [ "${RETRIES:-0}" -gt 0 ] 2>/dev/null && retry_args=(--retry "$RETRIES" --retry-delay 2)
+
+  if [ -n "$remaining" ] && [ "$remaining" -gt 0 ]; then
+    tmp="$STATE_DIR/.curl-bytes.$$.$RANDOM"
+    err="$STATE_DIR/.curl-error.$$.$RANDOM"
+    set +o pipefail
+    curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" "$url" 2> "$err" \
+      | head -c "$remaining" \
+      | wc -c > "$tmp"
+    pipe_status="${PIPESTATUS[0]}"
+    set -o pipefail
+    bytes="$(tr -dc '0-9' < "$tmp" 2>/dev/null || printf '0')"
+    rm -f "$tmp"
+    if [ "$pipe_status" -ne 0 ] && [ "$pipe_status" -ne 23 ]; then
+      log "download failed tool=curl url=$url status=$pipe_status"
+      [ -s "$err" ] && sed 's/^/[curl] /' "$err" >> "$LOG_FILE"
+      rm -f "$err"
+      return 1
+    fi
+    rm -f "$err"
+    counter_add "$bytes"
+    log "download ok bytes=$bytes total=$(counter_read) url=$url"
+    return 0
+  fi
+
+  output="$(curl -L -sS -A "$USER_AGENT" "${retry_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" -o /dev/null -w '%{http_code} %{size_download}' "$url" 2>&1)"
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    log "download failed tool=curl url=$url error=$output"
+    return 1
+  fi
+  bytes="$(printf '%s\n' "$output" | awk '{print $NF}')"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+  counter_add "$bytes"
+  log "download ok bytes=$bytes total=$(counter_read) url=$url"
+}
+
+wget_download() {
+  local url="$1"
+  local remaining="${2:-}"
+  local timeout_args=()
+  local rate_args=()
+  local tries_args=()
+  local tmp err pipe_status bytes
+
+  [ "${REQUEST_TIMEOUT:-0}" -gt 0 ] 2>/dev/null && timeout_args=(--timeout="$REQUEST_TIMEOUT")
+  [ -n "$RATE_LIMIT" ] && rate_args=(--limit-rate="$RATE_LIMIT")
+  [ "${RETRIES:-0}" -gt 0 ] 2>/dev/null && tries_args=(--tries="$((RETRIES + 1))")
+
+  if [ -n "$remaining" ] && [ "$remaining" -gt 0 ]; then
+    tmp="$STATE_DIR/.wget-bytes.$$.$RANDOM"
+    err="$STATE_DIR/.wget-error.$$.$RANDOM"
+    set +o pipefail
+    wget -q -U "$USER_AGENT" "${tries_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" -O - "$url" 2> "$err" \
+      | head -c "$remaining" \
+      | wc -c > "$tmp"
+    pipe_status="${PIPESTATUS[0]}"
+    set -o pipefail
+    bytes="$(tr -dc '0-9' < "$tmp" 2>/dev/null || printf '0')"
+    rm -f "$tmp"
+    if [ "$pipe_status" -ne 0 ] && [ "$pipe_status" -ne 141 ]; then
+      log "download failed tool=wget url=$url status=$pipe_status"
+      [ -s "$err" ] && sed 's/^/[wget] /' "$err" >> "$LOG_FILE"
+      rm -f "$err"
+      return 1
+    fi
+    rm -f "$err"
+    counter_add "$bytes"
+    log "download ok bytes=$bytes total=$(counter_read) url=$url"
+    return 0
+  fi
+
+  if wget -q -U "$USER_AGENT" "${tries_args[@]}" "${timeout_args[@]}" "${rate_args[@]}" -O /dev/null "$url"; then
+    log "download ok bytes=unknown total=$(counter_read) url=$url"
+  else
+    log "download failed tool=wget url=$url"
+    return 1
+  fi
+}
+
+do_download() {
+  local url="$1"
+  local remaining=""
+  if max_bytes_value >/dev/null 2>&1; then
+    remaining="$(remaining_bytes)"
+    [ "$remaining" -gt 0 ] || return 2
+  fi
+
+  if have curl; then
+    curl_download "$url" "$remaining"
+  elif have wget; then
+    wget_download "$url" "$remaining"
+  else
+    die "curl or wget is required for downloads"
+  fi
+}
+
+curl_upload() {
+  local url="$1"
+  local bytes="$2"
+  local timeout_args=()
+  local rate_args=()
+  local src="/dev/zero"
+  local output status sent
+
+  [ "$UPLOAD_RANDOM" = "1" ] && src="/dev/urandom"
+  [ "${REQUEST_TIMEOUT:-0}" -gt 0 ] 2>/dev/null && timeout_args=(--max-time "$REQUEST_TIMEOUT")
+  [ -n "$RATE_LIMIT" ] && rate_args=(--limit-rate "$RATE_LIMIT")
+
+  output="$(head -c "$bytes" "$src" | curl -L -sS -A "$USER_AGENT" "${timeout_args[@]}" "${rate_args[@]}" -o /dev/null -w '%{http_code} %{size_upload}' -X POST --data-binary @- "$url" 2>&1)"
+  status=$?
+  sent="$(printf '%s\n' "$output" | awk '{print $NF}')"
+  [[ "$sent" =~ ^[0-9]+$ ]] || sent=0
+  if [ "$status" -ne 0 ]; then
+    if [ "$sent" -gt 0 ]; then
+      counter_add "$sent"
+    fi
+    log "upload failed url=$url error=$output"
+    return 1
+  fi
+
+  [ "$sent" -gt 0 ] || sent="$bytes"
+  counter_add "$sent"
+  log "upload ok bytes=$sent total=$(counter_read) url=$url"
+}
+
+do_upload() {
+  local url="$1"
+  local chunk bytes
+  have curl || die "curl is required for uploads"
+  chunk="$(parse_size "$UPLOAD_CHUNK")" || die "invalid UPLOAD_CHUNK: $UPLOAD_CHUNK"
+  bytes="$chunk"
+
+  if max_bytes_value >/dev/null 2>&1; then
+    local remaining
+    remaining="$(remaining_bytes)"
+    [ "$remaining" -gt 0 ] || return 2
+    [ "$remaining" -lt "$bytes" ] && bytes="$remaining"
+  fi
+
+  [ "$bytes" -gt 0 ] || return 2
+  curl_upload "$url" "$bytes"
+}
+
+download_worker() {
+  local worker="$1"
+  local iter=0
+  local url result
+  while true; do
+    limit_reached >/dev/null 2>&1 && break
+    if [ -n "${STOP_AT:-}" ] && [ "$(date +%s)" -ge "$STOP_AT" ]; then
+      break
+    fi
+    url="$(pick_url DOWNLOAD_TARGETS "$worker" "$iter")" || break
+    do_download "$url"
+    result=$?
+    [ "$result" -eq 2 ] && break
+    [ "$result" -ne 0 ] && sleep_after_error
+    iter=$((iter + 1))
+    sleep_between
+  done
+  log "download worker $worker stopped"
+}
+
+upload_worker() {
+  local worker="$1"
+  local iter=0
+  local url result
+  while true; do
+    limit_reached >/dev/null 2>&1 && break
+    if [ -n "${STOP_AT:-}" ] && [ "$(date +%s)" -ge "$STOP_AT" ]; then
+      break
+    fi
+    url="$(pick_url UPLOAD_TARGETS "$worker" "$iter")" || break
+    do_upload "$url"
+    result=$?
+    [ "$result" -eq 2 ] && break
+    [ "$result" -ne 0 ] && sleep_after_error
+    iter=$((iter + 1))
+    sleep_between
+  done
+  log "upload worker $worker stopped"
+}
+
+stop_children() {
+  trap - TERM INT
+  log "stopping workers"
+  jobs -pr | xargs -r kill 2>/dev/null || true
+  wait 2>/dev/null || true
+  log "runner stopped total=$(counter_read)"
+  exit 0
+}
+
+validate_config() {
+  [ "$MODE" = "auto" ] || [ "$MODE" = "download" ] || [ "$MODE" = "upload" ] || [ "$MODE" = "both" ] || die "MODE must be auto, download, upload, or both"
+  [ "$SCHEDULE" = "round-robin" ] || [ "$SCHEDULE" = "random" ] || die "SCHEDULE must be round-robin or random"
+  [[ "$CONCURRENCY" =~ ^[0-9]+$ ]] && [ "$CONCURRENCY" -gt 0 ] || die "CONCURRENCY must be a positive integer"
+  [[ "$UPLOAD_CONCURRENCY" =~ ^[0-9]+$ ]] && [ "$UPLOAD_CONCURRENCY" -gt 0 ] || die "UPLOAD_CONCURRENCY must be a positive integer"
+  [[ "$INTERVAL" =~ ^[0-9]+$ ]] || die "INTERVAL must be seconds"
+  [[ "$JITTER" =~ ^[0-9]+$ ]] || die "JITTER must be seconds"
+  [[ "$ERROR_SLEEP" =~ ^[0-9]+$ ]] || die "ERROR_SLEEP must be seconds"
+  [ -z "$MAX_BYTES" ] || parse_size "$MAX_BYTES" >/dev/null || die "invalid MAX_BYTES: $MAX_BYTES"
+  [ -z "$UPLOAD_CHUNK" ] || parse_size "$UPLOAD_CHUNK" >/dev/null || die "invalid UPLOAD_CHUNK: $UPLOAD_CHUNK"
+}
+
+runner() {
+  validate_config
+  counter_init
+  split_urls "$URLS" DOWNLOAD_TARGETS
+  split_urls "$UPLOAD_URLS" UPLOAD_TARGETS
+
+  local run_download=0
+  local run_upload=0
+  case "$MODE" in
+    auto)
+      [ "${#DOWNLOAD_TARGETS[@]}" -gt 0 ] && run_download=1
+      [ "${#UPLOAD_TARGETS[@]}" -gt 0 ] && run_upload=1
+      ;;
+    download) run_download=1 ;;
+    upload) run_upload=1 ;;
+    both) run_download=1; run_upload=1 ;;
+  esac
+
+  [ "$run_download" -eq 0 ] || [ "${#DOWNLOAD_TARGETS[@]}" -gt 0 ] || die "download mode requires URLS"
+  [ "$run_upload" -eq 0 ] || [ "${#UPLOAD_TARGETS[@]}" -gt 0 ] || die "upload mode requires UPLOAD_URLS"
+
+  STOP_AT=""
+  if [ -n "$MAX_SECONDS" ]; then
+    [[ "$MAX_SECONDS" =~ ^[0-9]+$ ]] || die "MAX_SECONDS must be seconds"
+    STOP_AT="$(($(date +%s) + MAX_SECONDS))"
+  fi
+
+  trap stop_children TERM INT
+  log "$APP_NAME $VERSION started mode=$MODE schedule=$SCHEDULE down_workers=$CONCURRENCY up_workers=$UPLOAD_CONCURRENCY max_bytes=${MAX_BYTES:-none} max_seconds=${MAX_SECONDS:-none}"
+  log "log=$LOG_FILE pid=$PID_FILE counter=$COUNTER_FILE"
+
+  local i
+  if [ "$run_download" -eq 1 ]; then
+    for ((i = 0; i < CONCURRENCY; i++)); do
+      download_worker "$i" &
+    done
+  fi
+  if [ "$run_upload" -eq 1 ]; then
+    for ((i = 0; i < UPLOAD_CONCURRENCY; i++)); do
+      upload_worker "$i" &
+    done
+  fi
+
+  wait
+  log "all workers stopped total=$(counter_read)"
+}
+
+start_cmd() {
+  mkdir -p "$STATE_DIR"
+  local pid
+  pid="$(current_pid)"
+  if is_running "$pid"; then
+    die "already running with PID $pid; use ./traffic.sh stop"
+  fi
+
+  save_config
+  printf '0\n' > "$COUNTER_FILE"
+  local script
+  script="$(script_path)"
+  nohup "$script" run >> "$LOG_FILE" 2>&1 &
+  pid="$!"
+  printf '%s\n' "$pid" > "$PID_FILE"
+  printf 'started %s pid=%s\nlog=%s\npid_file=%s\n' "$APP_NAME" "$pid" "$LOG_FILE" "$PID_FILE"
+}
+
+stop_cmd() {
+  local pid
+  pid="$(current_pid)"
+  if ! is_running "$pid"; then
+    rm -f "$PID_FILE"
+    printf 'not running\n'
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  local i
+  for i in {1..20}; do
+    if ! is_running "$pid"; then
+      rm -f "$PID_FILE"
+      printf 'stopped pid=%s\n' "$pid"
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  printf 'force stopped pid=%s\n' "$pid"
+}
+
+status_cmd() {
+  local pid total
+  pid="$(current_pid)"
+  total="$(counter_read)"
+  if is_running "$pid"; then
+    printf 'running pid=%s total=%s (%s)\nlog=%s\npid_file=%s\n' "$pid" "$total" "$(human_bytes "$total")" "$LOG_FILE" "$PID_FILE"
+  else
+    printf 'stopped total=%s (%s)\nlog=%s\npid_file=%s\n' "$total" "$(human_bytes "$total")" "$LOG_FILE" "$PID_FILE"
+  fi
+}
+
+tail_cmd() {
+  mkdir -p "$STATE_DIR"
+  touch "$LOG_FILE"
+  tail -f "$LOG_FILE"
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --urls) URLS="${2:-}"; shift 2 ;;
+      --upload-urls) UPLOAD_URLS="${2:-}"; shift 2 ;;
+      --mode) MODE="${2:-}"; shift 2 ;;
+      --schedule) SCHEDULE="${2:-}"; shift 2 ;;
+      --concurrency) CONCURRENCY="${2:-}"; shift 2 ;;
+      --upload-concurrency) UPLOAD_CONCURRENCY="${2:-}"; shift 2 ;;
+      --interval) INTERVAL="${2:-}"; shift 2 ;;
+      --jitter) JITTER="${2:-}"; shift 2 ;;
+      --max-bytes) MAX_BYTES="${2:-}"; shift 2 ;;
+      --max-seconds) MAX_SECONDS="${2:-}"; shift 2 ;;
+      --rate-limit) RATE_LIMIT="${2:-}"; shift 2 ;;
+      --timeout) REQUEST_TIMEOUT="${2:-}"; shift 2 ;;
+      --upload-chunk) UPLOAD_CHUNK="${2:-}"; shift 2 ;;
+      --upload-random) UPLOAD_RANDOM="${2:-}"; shift 2 ;;
+      --error-sleep) ERROR_SLEEP="${2:-}"; shift 2 ;;
+      --log) LOG_FILE="${2:-}"; LOG_FILE_ARG=1; shift 2 ;;
+      --pid) PID_FILE="${2:-}"; PID_FILE_ARG=1; shift 2 ;;
+      --config-file) CONFIG_FILE="${2:-}"; CONFIG_FILE_ARG=1; shift 2 ;;
+      --counter-file) COUNTER_FILE="${2:-}"; COUNTER_FILE_ARG=1; shift 2 ;;
+      --lock-dir) LOCK_DIR="${2:-}"; LOCK_DIR_ARG=1; shift 2 ;;
+      --state-dir) STATE_DIR="${2:-}"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      --version) printf '%s\n' "$VERSION"; exit 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  if [ -z "$PID_FILE_ENV" ] && [ "$PID_FILE_ARG" -eq 0 ]; then PID_FILE="$STATE_DIR/traffic.pid"; fi
+  if [ -z "$LOG_FILE_ENV" ] && [ "$LOG_FILE_ARG" -eq 0 ]; then LOG_FILE="$STATE_DIR/traffic.log"; fi
+  if [ -z "$CONFIG_FILE_ENV" ] && [ "$CONFIG_FILE_ARG" -eq 0 ]; then CONFIG_FILE="$STATE_DIR/config.env"; fi
+  if [ -z "$COUNTER_FILE_ENV" ] && [ "$COUNTER_FILE_ARG" -eq 0 ]; then COUNTER_FILE="$STATE_DIR/bytes.count"; fi
+  if [ -z "$LOCK_DIR_ENV" ] && [ "$LOCK_DIR_ARG" -eq 0 ]; then LOCK_DIR="$STATE_DIR/lock"; fi
+}
+
+main() {
+  local cmd="${1:-help}"
+  [ "$#" -gt 0 ] && shift || true
+  parse_args "$@"
+
+  case "$cmd" in
+    start) start_cmd ;;
+    stop) stop_cmd ;;
+    status) status_cmd ;;
+    tail) tail_cmd ;;
+    run) load_config; runner ;;
+    once) runner ;;
+    help|-h|--help) usage ;;
+    version|--version) printf '%s\n' "$VERSION" ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+main "$@"

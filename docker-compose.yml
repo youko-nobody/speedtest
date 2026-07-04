@@ -1,0 +1,14 @@
+services:
+  traffic-server:
+    build: .
+    ports:
+      - "8080:8080"
+    command:
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --token
+      - CHANGE_ME
+    restart: unless-stopped
