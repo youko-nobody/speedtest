@@ -38,6 +38,14 @@ One-line stop command:
 curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh stop
 ```
 
+## One-Line Reselect Every Minute
+
+Run in the background and randomly select one official speed-test URL every 60 seconds. During each 60-second slot, only that selected URL is used:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh start --preset official --select-every 60 --concurrency 4 --interval 0
+```
+
 ## Start In Background
 
 ```bash

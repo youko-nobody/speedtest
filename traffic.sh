@@ -34,6 +34,7 @@ INTERVAL="${INTERVAL:-60}"
 JITTER="${JITTER:-0}"
 MAX_BYTES="${MAX_BYTES:-}"
 MAX_SECONDS="${MAX_SECONDS:-}"
+SELECT_EVERY_SECONDS="${SELECT_EVERY_SECONDS:-0}"
 RATE_LIMIT="${RATE_LIMIT:-}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-0}"
 UPLOAD_CHUNK="${UPLOAD_CHUNK:-64M}"
@@ -98,6 +99,9 @@ Options and env:
   --jitter SECONDS          Extra random sleep after each request. Env: JITTER
   --max-bytes SIZE          Stop after approximate total bytes, e.g. 20G. Env: MAX_BYTES
   --max-seconds SECONDS     Stop after runtime seconds. Env: MAX_SECONDS
+  --select-every SECONDS    Re-randomize one download URL every N seconds.
+                            During each slot, only the selected URL is used.
+                            Env: SELECT_EVERY_SECONDS
   --window-seconds SECONDS  Random-minute window, default 300. Env: RANDOM_WINDOW_SECONDS
   --run-seconds SECONDS     Random-minute run length, default 60. Env: RANDOM_RUN_SECONDS
   --rate-limit RATE         Per-worker curl/wget limit, e.g. 20M. Env: RATE_LIMIT
@@ -274,7 +278,7 @@ save_config() {
   for var in \
     STATE_DIR PID_FILE LOG_FILE CONFIG_FILE COUNTER_FILE LOCK_DIR \
     URLS URLS_FILE PRESET UPLOAD_URLS MODE SCHEDULE CONCURRENCY UPLOAD_CONCURRENCY \
-    INTERVAL JITTER MAX_BYTES MAX_SECONDS RATE_LIMIT REQUEST_TIMEOUT \
+    INTERVAL JITTER MAX_BYTES MAX_SECONDS SELECT_EVERY_SECONDS RATE_LIMIT REQUEST_TIMEOUT \
     UPLOAD_CHUNK UPLOAD_RANDOM USER_AGENT RETRIES ERROR_SLEEP \
     RANDOM_WINDOW_SECONDS RANDOM_RUN_SECONDS RANDOM_START_DELAY
   do
@@ -408,6 +412,45 @@ pick_url() {
     index=$(((worker + iter) % count))
   fi
   eval "printf '%s\n' \"\${$array_name[$index]}\""
+}
+
+pick_random_url() {
+  local array_name="$1"
+  local count index
+  eval "count=\${#$array_name[@]}"
+  [ "$count" -gt 0 ] || return 1
+  index=$((RANDOM % count))
+  eval "printf '%s\n' \"\${$array_name[$index]}\""
+}
+
+select_every_url() {
+  local array_name="$1"
+  local now current_slot lock file old_slot old_url new_url
+  now="$(date +%s)"
+  current_slot=$((now / SELECT_EVERY_SECONDS))
+  lock="$STATE_DIR/select-every.lock"
+  file="$STATE_DIR/select-every.current"
+
+  while ! mkdir "$lock" 2>/dev/null; do
+    sleep 0.05
+  done
+
+  old_slot="$(sed -n '1p' "$file" 2>/dev/null || true)"
+  old_url="$(sed -n '2p' "$file" 2>/dev/null || true)"
+  if [ "$old_slot" = "$current_slot" ] && [ -n "$old_url" ]; then
+    rmdir "$lock" 2>/dev/null || true
+    printf '%s\n' "$old_url"
+    return 0
+  fi
+
+  new_url="$(pick_random_url "$array_name")" || {
+    rmdir "$lock" 2>/dev/null || true
+    return 1
+  }
+  printf '%s\n%s\n' "$current_slot" "$new_url" > "$file"
+  rmdir "$lock" 2>/dev/null || true
+  log "select-every slot=$current_slot seconds=$SELECT_EVERY_SECONDS url=$new_url" >&2
+  printf '%s\n' "$new_url"
 }
 
 sleep_between() {
@@ -594,7 +637,11 @@ download_worker() {
     if time_reached; then
       break
     fi
-    url="$(pick_url DOWNLOAD_TARGETS "$worker" "$iter")" || break
+    if [ "${SELECT_EVERY_SECONDS:-0}" -gt 0 ] 2>/dev/null; then
+      url="$(select_every_url DOWNLOAD_TARGETS)" || break
+    else
+      url="$(pick_url DOWNLOAD_TARGETS "$worker" "$iter")" || break
+    fi
     do_download "$url"
     result=$?
     [ "$result" -eq 2 ] && break
@@ -645,6 +692,7 @@ validate_config() {
   [[ "$INTERVAL" =~ ^[0-9]+$ ]] || die "INTERVAL must be seconds"
   [[ "$JITTER" =~ ^[0-9]+$ ]] || die "JITTER must be seconds"
   [[ "$ERROR_SLEEP" =~ ^[0-9]+$ ]] || die "ERROR_SLEEP must be seconds"
+  [[ "$SELECT_EVERY_SECONDS" =~ ^[0-9]+$ ]] || die "SELECT_EVERY_SECONDS must be seconds"
   [ -z "$MAX_BYTES" ] || parse_size "$MAX_BYTES" >/dev/null || die "invalid MAX_BYTES: $MAX_BYTES"
   [ -z "$UPLOAD_CHUNK" ] || parse_size "$UPLOAD_CHUNK" >/dev/null || die "invalid UPLOAD_CHUNK: $UPLOAD_CHUNK"
 }
@@ -652,6 +700,7 @@ validate_config() {
 runner() {
   validate_config
   counter_init
+  rm -f "$STATE_DIR/select-every.current"
   split_urls "$(build_download_urls_text)" DOWNLOAD_TARGETS
   split_urls "$UPLOAD_URLS" UPLOAD_TARGETS
 
@@ -769,6 +818,7 @@ random_window_runner() {
   CONCURRENCY=1
   UPLOAD_CONCURRENCY=1
   MAX_SECONDS="$RANDOM_RUN_SECONDS"
+  SELECT_EVERY_SECONDS=0
   INTERVAL=0
   JITTER=0
   if [ -z "$REQUEST_TIMEOUT" ] || [ "$REQUEST_TIMEOUT" = "0" ] || [ "$REQUEST_TIMEOUT" -gt "$RANDOM_RUN_SECONDS" ] 2>/dev/null; then
@@ -840,6 +890,7 @@ parse_args() {
       --jitter) JITTER="${2:-}"; shift 2 ;;
       --max-bytes) MAX_BYTES="${2:-}"; shift 2 ;;
       --max-seconds) MAX_SECONDS="${2:-}"; shift 2 ;;
+      --select-every) SELECT_EVERY_SECONDS="${2:-}"; shift 2 ;;
       --window-seconds) RANDOM_WINDOW_SECONDS="${2:-}"; shift 2 ;;
       --run-seconds) RANDOM_RUN_SECONDS="${2:-}"; shift 2 ;;
       --rate-limit) RATE_LIMIT="${2:-}"; shift 2 ;;

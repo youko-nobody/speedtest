@@ -24,6 +24,14 @@ curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic
 curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh stop
 ```
 
+## 一键每分钟换一个随机链接
+
+下面这一行会后台持续运行，每 60 秒重新随机抽取 1 个官方测速链接，并且这一分钟内只跑当前抽中的链接：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh start --preset official --select-every 60 --concurrency 4 --interval 0
+```
+
 它可以把你之前这种单链接循环：
 
 ```bash
@@ -122,6 +130,7 @@ MAX_BYTES=50G \
 | `JITTER` / `--jitter` | 每轮请求后的随机额外秒数 |
 | `MAX_BYTES` / `--max-bytes` | 总流量上限，例如 `20G` |
 | `MAX_SECONDS` / `--max-seconds` | 运行秒数上限 |
+| `SELECT_EVERY_SECONDS` / `--select-every` | 每 N 秒重新随机抽取 1 个下载链接，槽内只跑这个链接 |
 | `RANDOM_WINDOW_SECONDS` / `--window-seconds` | `random-minute` 的随机窗口，默认 `300` |
 | `RANDOM_RUN_SECONDS` / `--run-seconds` | `random-minute` 的单次运行时长，默认 `60` |
 | `RATE_LIMIT` / `--rate-limit` | 单 worker 限速，例如 `20M` |
