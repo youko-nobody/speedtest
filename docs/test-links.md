@@ -14,6 +14,18 @@ https://speedtest.ams1.nl.leaseweb.net/1000mb.bin
 
 Source: [Leaseweb Link Speeds & Speed tests](https://kb.leaseweb.com/kb/network/network-link-speeds/)
 
+## SpeedyPage
+
+SpeedyPage publishes looking-glass test files by location using the `{location}.lg.speedypage.com` format.
+
+Example:
+
+```text
+https://lon.lg.speedypage.com/1GB.test
+```
+
+Source: [SpeedyPage network looking glass and test files](https://speedypage.com/docs/general/network-looking-glass)
+
 ## OVHcloud
 
 OVHcloud provides `proof.ovh.net` for file downloads and iperf3 tests.
@@ -43,6 +55,18 @@ Source: [Hetzner NBG1 test files](https://nbg1-speed.hetzner.com/)
 Scaleway's public net-test page includes test files and warns that scripts should not exceed 40 GB per day per IP.
 
 Source: [Scaleway net-test](https://scaleway.testdebit.info/)
+
+## Additional Official Pools
+
+The script also includes official/test-file endpoints from:
+
+- [Hostiserver Speedtest](https://www.hostiserver.com/speedtest)
+- [MilkyWan Speedtest](https://speedtest.milkywan.fr/)
+- [Artfiles Speedtest](https://speed.af.de/)
+- [VelociHOST Network Speed Test](https://www.velocihost.net/network-speed-test/)
+- [BITel Speedtest](https://speedtest.bitel.io/)
+- [Serverius Speedtest](https://speedtest.serverius.net/)
+- [Liquid Web Looking Glass](https://www.liquidweb.com/help-docs/performance/server-optimization/testing-your-networks-speed-and-reliability/)
 
 ## Avoid For Automation
 

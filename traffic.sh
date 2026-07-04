@@ -23,7 +23,9 @@ COUNTER_FILE_ARG=0
 LOCK_DIR_ARG=0
 
 URLS="${URLS:-}"
+URLS_FILE="${URLS_FILE:-}"
 UPLOAD_URLS="${UPLOAD_URLS:-}"
+PRESET="${PRESET:-none}"
 MODE="${MODE:-auto}"
 SCHEDULE="${SCHEDULE:-round-robin}"
 CONCURRENCY="${CONCURRENCY:-2}"
@@ -49,6 +51,7 @@ Usage:
   ./traffic.sh stop
   ./traffic.sh status
   ./traffic.sh tail
+  ./traffic.sh links
   ./traffic.sh run
   ./traffic.sh once [options]
 
@@ -57,7 +60,7 @@ Common start examples:
     CONCURRENCY=4 INTERVAL=60 ./traffic.sh start
 
   ./traffic.sh start \
-    --urls "https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/files/1Gb.dat" \
+    --preset official \
     --schedule random \
     --concurrency 4 \
     --interval 60 \
@@ -70,11 +73,14 @@ Commands:
   stop        Stop the background process and all workers.
   status      Show PID, log path, and transferred byte counter.
   tail        Follow the log file.
+  links       Print the built-in official speed-test URL pool.
   run         Internal foreground runner used by start.
   once        Run in foreground until stopped or limits are reached.
 
 Options and env:
   --urls VALUE              Download URLs, separated by spaces, commas, or newlines. Env: URLS
+  --urls-file FILE          Read download URLs from a file. Env: URLS_FILE
+  --preset VALUE            none or official. Env: PRESET
   --upload-urls VALUE       Upload endpoints for POST body traffic. Env: UPLOAD_URLS
   --mode VALUE              auto, download, upload, both. Env: MODE
   --schedule VALUE          round-robin or random. Env: SCHEDULE
@@ -126,6 +132,97 @@ normalize_list() {
   printf '%s\n' "$1" | tr ',\n\t' '   '
 }
 
+builtin_official_urls() {
+  cat <<'EOF'
+# Leaseweb official speed-test locations
+https://speedtest.ams1.nl.leaseweb.net/1000mb.bin
+https://speedtest.ams2.nl.leaseweb.net/1000mb.bin
+https://speedtest.fra1.de.leaseweb.net/1000mb.bin
+https://speedtest.lon1.uk.leaseweb.net/1000mb.bin
+https://speedtest.lon12.uk.leaseweb.net/1000mb.bin
+https://speedtest.lax12.us.leaseweb.net/1000mb.bin
+https://speedtest.wdc2.us.leaseweb.net/1000mb.bin
+https://speedtest.sfo12.us.leaseweb.net/1000mb.bin
+https://speedtest.sea11.us.leaseweb.net/1000mb.bin
+https://speedtest.mia11.us.leaseweb.net/1000mb.bin
+https://speedtest.phx1.us.leaseweb.net/1000mb.bin
+https://speedtest.dal13.us.leaseweb.net/1000mb.bin
+https://speedtest.nyc1.us.leaseweb.net/1000mb.bin
+https://speedtest.chi11.us.leaseweb.net/1000mb.bin
+https://speedtest.sin1.sg.leaseweb.net/1000mb.bin
+https://speedtest.syd12.au.leaseweb.net/1000mb.bin
+https://speedtest.hkg12.hk.leaseweb.net/1000mb.bin
+https://speedtest.tyo11.jp.leaseweb.net/1000mb.bin
+https://speedtest.mtl2.ca.leaseweb.net/1000mb.bin
+
+# OVHcloud proof speed-test files
+https://proof.ovh.net/files/1Gb.dat
+https://proof.ovh.net/files/10Gb.dat
+
+# Hetzner regional speed-test files
+https://hel1-speed.hetzner.com/1GB.bin
+https://fsn1-speed.hetzner.com/1GB.bin
+https://nbg1-speed.hetzner.com/1GB.bin
+
+# Scaleway net-test files. Respect their published 40 GB/day/IP script limit.
+https://scaleway.testdebit.info/100M.iso
+https://scaleway.testdebit.info/10G.iso
+
+# Artfiles official speed-test files
+https://speed.af.de/files/100MB.bin
+https://speed.af.de/files/1GB.bin
+
+# Hostiserver official speed-test files
+https://us.speedtest.hostiserver.com/100MB
+https://us.speedtest.hostiserver.com/500MB
+https://eu.speedtest.hostiserver.com/100MB
+https://eu.speedtest.hostiserver.com/500MB
+
+# SpeedyPage official looking-glass test files
+https://lon.lg.speedypage.com/1GB.test
+https://ash.lg.speedypage.com/1GB.test
+https://la.lg.speedypage.com/1GB.test
+https://ams.lg.speedypage.com/1GB.test
+https://sg.lg.speedypage.com/1GB.test
+https://tyo.lg.speedypage.com/1GB.test
+https://syd.lg.speedypage.com/1GB.test
+
+# MilkyWan official speed-test files
+http://speedtest.milkywan.fr/files/100M.iso
+http://speedtest.milkywan.fr/files/1G.iso
+http://speedtest.milkywan.fr/files/10G.iso
+
+# VelociHOST official speed-test files
+https://mirror.mia.velocihost.net/speedtest/50MB.bin
+https://mirror.mia.velocihost.net/speedtest/500MB.bin
+https://mirror.mia.velocihost.net/speedtest/1000MB.bin
+
+# BITel official speed-test files
+https://speedtest.bitel.io/Testdateien/100MB
+https://speedtest.bitel.io/Testdateien/500MB
+https://speedtest.bitel.io/Testdateien/1000MB
+https://speedtest.bitel.io/Testdateien/5GB
+
+# Serverius official speed-test files
+http://speedtest1.serverius.net/files/1000mb.bin
+http://speedtest1.serverius.net/files/2000mb.bin
+http://speedtest2.serverius.net/files/1000mb.bin
+http://speedtest3.serverius.net/files/1000mb.bin
+
+# Liquid Web official test file
+https://lg.liquidweb.com/static/files/1000mb.bin
+
+# BelWue speed-test files listed by IP-Toolbox
+http://speedtest.belwue.net/100M
+http://speedtest.belwue.net/1G
+http://speedtest.belwue.net/10G
+EOF
+}
+
+strip_url_text() {
+  sed '1s/^\xEF\xBB\xBF//' | sed -E '/^[[:space:]]*#/d; s/[[:space:]]+#.*$//' | tr ',\t' '  ' | awk 'NF { print }'
+}
+
 parse_size() {
   local raw="${1:-}"
   local value unit
@@ -166,7 +263,7 @@ save_config() {
   local var
   for var in \
     STATE_DIR PID_FILE LOG_FILE CONFIG_FILE COUNTER_FILE LOCK_DIR \
-    URLS UPLOAD_URLS MODE SCHEDULE CONCURRENCY UPLOAD_CONCURRENCY \
+    URLS URLS_FILE PRESET UPLOAD_URLS MODE SCHEDULE CONCURRENCY UPLOAD_CONCURRENCY \
     INTERVAL JITTER MAX_BYTES MAX_SECONDS RATE_LIMIT REQUEST_TIMEOUT \
     UPLOAD_CHUNK UPLOAD_RANDOM USER_AGENT RETRIES ERROR_SLEEP
   do
@@ -258,11 +355,32 @@ split_urls() {
   local array_name="$2"
   local item
   eval "$array_name=()"
+  local had_noglob=0
+  case "$-" in *f*) had_noglob=1 ;; esac
+  set -f
   # shellcheck disable=SC2206
   local parts=( $(normalize_list "$input") )
+  [ "$had_noglob" -eq 1 ] || set +f
   for item in "${parts[@]}"; do
     [ -n "$item" ] && eval "$array_name+=(\"\$item\")"
   done
+}
+
+build_download_urls_text() {
+  case "$PRESET" in
+    none|"") ;;
+    official) builtin_official_urls | strip_url_text ;;
+    *) die "unknown PRESET: $PRESET" ;;
+  esac
+
+  if [ -n "$URLS_FILE" ]; then
+    [ -f "$URLS_FILE" ] || die "URLS_FILE not found: $URLS_FILE"
+    strip_url_text < "$URLS_FILE"
+  fi
+
+  if [ -n "$URLS" ]; then
+    printf '%s\n' "$URLS"
+  fi
 }
 
 pick_url() {
@@ -500,6 +618,7 @@ stop_children() {
 
 validate_config() {
   [ "$MODE" = "auto" ] || [ "$MODE" = "download" ] || [ "$MODE" = "upload" ] || [ "$MODE" = "both" ] || die "MODE must be auto, download, upload, or both"
+  [ "$PRESET" = "none" ] || [ "$PRESET" = "official" ] || [ -z "$PRESET" ] || die "PRESET must be none or official"
   [ "$SCHEDULE" = "round-robin" ] || [ "$SCHEDULE" = "random" ] || die "SCHEDULE must be round-robin or random"
   [[ "$CONCURRENCY" =~ ^[0-9]+$ ]] && [ "$CONCURRENCY" -gt 0 ] || die "CONCURRENCY must be a positive integer"
   [[ "$UPLOAD_CONCURRENCY" =~ ^[0-9]+$ ]] && [ "$UPLOAD_CONCURRENCY" -gt 0 ] || die "UPLOAD_CONCURRENCY must be a positive integer"
@@ -513,7 +632,7 @@ validate_config() {
 runner() {
   validate_config
   counter_init
-  split_urls "$URLS" DOWNLOAD_TARGETS
+  split_urls "$(build_download_urls_text)" DOWNLOAD_TARGETS
   split_urls "$UPLOAD_URLS" UPLOAD_TARGETS
 
   local run_download=0
@@ -617,10 +736,16 @@ tail_cmd() {
   tail -f "$LOG_FILE"
 }
 
+links_cmd() {
+  builtin_official_urls
+}
+
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --urls) URLS="${2:-}"; shift 2 ;;
+      --urls-file) URLS_FILE="${2:-}"; shift 2 ;;
+      --preset) PRESET="${2:-}"; shift 2 ;;
       --upload-urls) UPLOAD_URLS="${2:-}"; shift 2 ;;
       --mode) MODE="${2:-}"; shift 2 ;;
       --schedule) SCHEDULE="${2:-}"; shift 2 ;;
@@ -664,6 +789,7 @@ main() {
     stop) stop_cmd ;;
     status) status_cmd ;;
     tail) tail_cmd ;;
+    links) links_cmd ;;
     run) load_config; runner ;;
     once) runner ;;
     help|-h|--help) usage ;;

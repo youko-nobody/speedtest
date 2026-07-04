@@ -38,14 +38,14 @@ wget -O traffic.sh https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/
 ## 一行启动
 
 ```bash
-URLS="https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/files/1Gb.dat" CONCURRENCY=4 INTERVAL=60 JITTER=10 MAX_BYTES=20G ./traffic.sh start
+./traffic.sh start --preset official --schedule random --concurrency 4 --interval 60 --jitter 10 --max-bytes 20G
 ```
 
 或者用参数写法：
 
 ```bash
 ./traffic.sh start \
-  --urls "https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/files/1Gb.dat" \
+  --preset official \
   --schedule random \
   --concurrency 4 \
   --interval 60 \
@@ -59,6 +59,12 @@ URLS="https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/fi
 ./traffic.sh status
 ./traffic.sh tail
 ./traffic.sh stop
+```
+
+查看内置官方测速链接池：
+
+```bash
+./traffic.sh links
 ```
 
 默认状态目录是 `~/.traffic-burner/`，日志在 `~/.traffic-burner/traffic.log`，PID 在 `~/.traffic-burner/traffic.pid`。
@@ -83,6 +89,8 @@ MAX_BYTES=50G \
 | 变量/参数 | 说明 |
 | --- | --- |
 | `URLS` / `--urls` | 下载链接，多个用空格、逗号或换行分隔 |
+| `URLS_FILE` / `--urls-file` | 从文本文件读取下载链接，支持 `#` 注释 |
+| `PRESET` / `--preset` | `none` 或 `official`，`official` 是内置官方测速链接池 |
 | `UPLOAD_URLS` / `--upload-urls` | 上传接口，多个用空格、逗号或换行分隔 |
 | `MODE` / `--mode` | `auto`、`download`、`upload`、`both` |
 | `SCHEDULE` / `--schedule` | `round-robin` 或 `random` |
@@ -208,6 +216,12 @@ data center speedtest file
 Scaleway 的测试页提示脚本每天每 IP 不要超过 40GB；这类公共端点务必设置 `maxBytes`、`maxDownloadBytes` 或 `maxDuration`。
 
 更详细的链接清单在 [docs/test-links.md](docs/test-links.md)。
+
+项目还提供了 [examples/user-provided-urls.txt](examples/user-provided-urls.txt)，里面放了你提供的移动云盘、vivo、快手、拼多多、华为 CDN、Steam Akamai 链接。它们不是官方测速端点，所以默认都注释了；确认你有权限重复下载后，取消对应行前面的 `#`，然后这样跑：
+
+```bash
+./traffic.sh start --urls-file examples/user-provided-urls.txt --schedule random --concurrency 4 --interval 60 --max-bytes 20G
+```
 
 配置时请把这类外部链接写成 `downloadOnly: true`，例如：
 

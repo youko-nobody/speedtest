@@ -19,7 +19,7 @@ wget -O traffic.sh https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/
 ## Start In Background
 
 ```bash
-URLS="https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/files/1Gb.dat" CONCURRENCY=4 INTERVAL=60 JITTER=10 MAX_BYTES=20G ./traffic.sh start
+./traffic.sh start --preset official --schedule random --concurrency 4 --interval 60 --jitter 10 --max-bytes 20G
 ```
 
 ## Check, Watch, Stop
@@ -34,13 +34,25 @@ URLS="https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/fi
 
 ```bash
 ./traffic.sh start \
-  --urls "https://speedtest.ams1.nl.leaseweb.net/1000mb.bin https://proof.ovh.net/files/1Gb.dat" \
+  --preset official \
   --schedule random \
   --concurrency 4 \
   --interval 60 \
   --jitter 10 \
   --max-bytes 20G \
   --rate-limit 20M
+```
+
+Print the built-in official link pool:
+
+```bash
+./traffic.sh links
+```
+
+Run your own URL file:
+
+```bash
+./traffic.sh start --urls-file examples/user-provided-urls.txt --schedule random --concurrency 4 --interval 60 --max-bytes 20G
 ```
 
 ## Upload And Download
