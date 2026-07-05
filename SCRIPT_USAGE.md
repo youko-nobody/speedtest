@@ -85,6 +85,24 @@ Run your own URL file:
 ./traffic.sh start --urls-file examples/user-provided-urls.txt --schedule random --concurrency 4 --interval 60 --max-bytes 20G
 ```
 
+Merge your uncommented URL file into the official random pool:
+
+```bash
+./traffic.sh start --preset official --urls-file examples/user-provided-urls.txt --select-every 60 --concurrency 4 --interval 0
+```
+
+Use only your own URL file:
+
+```bash
+./traffic.sh start --urls-file examples/user-provided-urls.txt --select-every 60 --concurrency 4 --interval 0
+```
+
+Use the merged pool with random-minute mode:
+
+```bash
+./traffic.sh random-minute --preset official --urls-file examples/user-provided-urls.txt --window-seconds 300 --run-seconds 60
+```
+
 ## Upload And Download
 
 Only use upload URLs that you control.
