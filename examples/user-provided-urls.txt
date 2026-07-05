@@ -6,19 +6,19 @@
 #   ./traffic.sh start --urls-file examples/user-provided-urls.txt --schedule random --concurrency 4 --interval 60 --max-bytes 20G
 
 # 移动云盘
-# https://yun.mcloud.139.com/hongseyunpan/2.43G.zip
+https://yun.mcloud.139.com/hongseyunpan/2.43G.zip
 
 # vivo
-# https://wwwstatic.vivo.com.cn/vivoportal/files/resource/funtouch/1651200648928/images/os2-jude-video.mp4
+https://wwwstatic.vivo.com.cn/vivoportal/files/resource/funtouch/1651200648928/images/os2-jude-video.mp4
 
 # 快手
-# https://alimov2.a.kwimgs.com/upic/2024/11/18/17/BMjAyNDExMTgxNzM0NTFfMjQ2MzY1ODI4MV8xNDg5NTc1NTQwNDBfMl8z_b_Ba0e085802ad867415b13e560bab69dd2.mp4
+https://alimov2.a.kwimgs.com/upic/2024/11/18/17/BMjAyNDExMTgxNzM0NTFfMjQ2MzY1ODI4MV8xNDg5NTc1NTQwNDBfMl8z_b_Ba0e085802ad867415b13e560bab69dd2.mp4
 
 # 拼多多
-# https://cd.pddpic.com/android_dev/2023-07-28/5c04772968aee57ca690fbe1e7f29467.apk
+https://cd.pddpic.com/android_dev/2023-07-28/5c04772968aee57ca690fbe1e7f29467.apk
 
 # 华为 CDN
-# https://store-drcn.hispace.dbankcloud.cn/dl/appdl/application/apk/ce/cea074d22c784e4ab8a5b19ba8b493a5/com.huawei.appmarket.1908281654.apk?maple=0&trackId=0&distOpEntity=HWSW#enhanced
+https://store-drcn.hispace.dbankcloud.cn/dl/appdl/application/apk/ce/cea074d22c784e4ab8a5b19ba8b493a5/com.huawei.appmarket.1908281654.apk?maple=0&trackId=0&distOpEntity=HWSW#enhanced
 
 # Steam Akamai
-# http://cdn.akamai.steamstatic.com/steam/apps/1063730/extras/NW_Sword_Sorcery_2.gif
+http://cdn.akamai.steamstatic.com/steam/apps/1063730/extras/NW_Sword_Sorcery_2.gif
