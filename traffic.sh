@@ -186,21 +186,6 @@ https://scaleway.testdebit.info/10G.iso
 https://speed.af.de/files/100MB.bin
 https://speed.af.de/files/1GB.bin
 
-# Hostiserver official speed-test files
-https://us.speedtest.hostiserver.com/100MB
-https://us.speedtest.hostiserver.com/500MB
-https://eu.speedtest.hostiserver.com/100MB
-https://eu.speedtest.hostiserver.com/500MB
-
-# SpeedyPage official looking-glass test files
-https://lon.lg.speedypage.com/1GB.test
-https://ash.lg.speedypage.com/1GB.test
-https://la.lg.speedypage.com/1GB.test
-https://ams.lg.speedypage.com/1GB.test
-https://sg.lg.speedypage.com/1GB.test
-https://tyo.lg.speedypage.com/1GB.test
-https://syd.lg.speedypage.com/1GB.test
-
 # MilkyWan official speed-test files
 http://speedtest.milkywan.fr/files/100M.iso
 http://speedtest.milkywan.fr/files/1G.iso
@@ -213,7 +198,6 @@ https://mirror.mia.velocihost.net/speedtest/1000MB.bin
 
 # BITel official speed-test files
 https://speedtest.bitel.io/Testdateien/100MB
-https://speedtest.bitel.io/Testdateien/500MB
 https://speedtest.bitel.io/Testdateien/1000MB
 https://speedtest.bitel.io/Testdateien/5GB
 
