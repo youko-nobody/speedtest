@@ -22,6 +22,14 @@ mkdir -p examples && curl -fsSL https://raw.githubusercontent.com/youko-nobody/s
 mkdir -p examples && curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/examples/user-provided-urls.txt -o examples/user-provided-urls.txt && chmod +x traffic.sh && ./traffic.sh random-minute --preset official --urls-file examples/user-provided-urls.txt --window-seconds 300 --run-seconds 60
 ```
 
+如果你已经在 VPS 上跑着旧脚本，先停掉再重新拉取新版启动：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh stop && ./traffic.sh start --preset official --select-every 60 --concurrency 4 --interval 0
+```
+
+日志里出现 `status=28` 或 `Connection timed out` 通常表示这一分钟抽中的测速点连不上，不代表脚本停止。新版会把连续 0 字节失败的 URL 临时跳过，默认连续失败 2 次后冷却 30 分钟。
+
 ## 一键随机跑 1 分钟
 
 下面这一行会下载脚本，并在接下来的 5 分钟内随机抽取其中 1 分钟，随机抽取 1 个官方测速链接，然后只持续跑这个链接 60 秒：

@@ -46,6 +46,14 @@ Run in the background and randomly select one official speed-test URL every 60 s
 curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh start --preset official --select-every 60 --concurrency 4 --interval 0
 ```
 
+If an old process is already running on the VPS, update the script, stop the old process, and restart in one line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/youko-nobody/speedtest/main/traffic.sh -o traffic.sh && chmod +x traffic.sh && ./traffic.sh stop && ./traffic.sh start --preset official --select-every 60 --concurrency 4 --interval 0
+```
+
+`status=28` or `Connection timed out` means the selected speed-test endpoint did not respond in time; it does not mean the runner stopped. The script temporarily skips URLs after repeated zero-byte failures. Defaults: 2 failures, 30-minute cooldown.
+
 ## Start In Background
 
 ```bash

@@ -35,6 +35,8 @@ JITTER="${JITTER:-0}"
 MAX_BYTES="${MAX_BYTES:-}"
 MAX_SECONDS="${MAX_SECONDS:-}"
 SELECT_EVERY_SECONDS="${SELECT_EVERY_SECONDS:-0}"
+URL_FAILURE_LIMIT="${URL_FAILURE_LIMIT:-2}"
+URL_COOLDOWN_SECONDS="${URL_COOLDOWN_SECONDS:-1800}"
 RATE_LIMIT="${RATE_LIMIT:-}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-0}"
 UPLOAD_CHUNK="${UPLOAD_CHUNK:-64M}"
@@ -102,6 +104,11 @@ Options and env:
   --select-every SECONDS    Re-randomize one download URL every N seconds.
                             During each slot, only the selected URL is used.
                             Env: SELECT_EVERY_SECONDS
+  --failure-limit N         Mark a URL unhealthy after N zero-byte failures.
+                            Use 0 to disable. Default: 2. Env: URL_FAILURE_LIMIT
+  --failure-cooldown SECONDS
+                            Temporarily skip unhealthy URLs for this long.
+                            Default: 1800. Env: URL_COOLDOWN_SECONDS
   --window-seconds SECONDS  Random-minute window, default 300. Env: RANDOM_WINDOW_SECONDS
   --run-seconds SECONDS     Random-minute run length, default 60. Env: RANDOM_RUN_SECONDS
   --rate-limit RATE         Per-worker curl/wget limit, e.g. 20M. Env: RATE_LIMIT
@@ -165,7 +172,6 @@ https://speedtest.nyc1.us.leaseweb.net/1000mb.bin
 https://speedtest.chi11.us.leaseweb.net/1000mb.bin
 https://speedtest.sin1.sg.leaseweb.net/1000mb.bin
 https://speedtest.syd12.au.leaseweb.net/1000mb.bin
-https://speedtest.hkg12.hk.leaseweb.net/1000mb.bin
 https://speedtest.tyo11.jp.leaseweb.net/1000mb.bin
 https://speedtest.mtl2.ca.leaseweb.net/1000mb.bin
 
@@ -259,7 +265,7 @@ save_config() {
   for var in \
     STATE_DIR PID_FILE LOG_FILE CONFIG_FILE COUNTER_FILE LOCK_DIR \
     URLS URLS_FILE PRESET UPLOAD_URLS MODE SCHEDULE CONCURRENCY UPLOAD_CONCURRENCY \
-    INTERVAL JITTER MAX_BYTES MAX_SECONDS SELECT_EVERY_SECONDS RATE_LIMIT REQUEST_TIMEOUT \
+    INTERVAL JITTER MAX_BYTES MAX_SECONDS SELECT_EVERY_SECONDS URL_FAILURE_LIMIT URL_COOLDOWN_SECONDS RATE_LIMIT REQUEST_TIMEOUT \
     UPLOAD_CHUNK UPLOAD_RANDOM USER_AGENT RETRIES ERROR_SLEEP \
     RANDOM_WINDOW_SECONDS RANDOM_RUN_SECONDS RANDOM_START_DELAY
   do
@@ -383,7 +389,7 @@ pick_url() {
   local array_name="$1"
   local worker="$2"
   local iter="$3"
-  local count index
+  local count index offset url until
   eval "count=\${#$array_name[@]}"
   [ "$count" -gt 0 ] || return 1
 
@@ -392,21 +398,44 @@ pick_url() {
   else
     index=$(((worker + iter) % count))
   fi
+
+  for ((offset = 0; offset < count; offset++)); do
+    eval "url=\"\${$array_name[$(((index + offset) % count))]}\""
+    if until="$(url_unhealthy_until "$url")"; then
+      log "skip unhealthy url=$url until=$until" >&2
+      continue
+    fi
+    printf '%s\n' "$url"
+    return 0
+  done
+
   eval "printf '%s\n' \"\${$array_name[$index]}\""
 }
 
 pick_random_url() {
   local array_name="$1"
-  local count index
+  local count index offset url until
   eval "count=\${#$array_name[@]}"
   [ "$count" -gt 0 ] || return 1
   index=$((RANDOM % count))
+
+  for ((offset = 0; offset < count; offset++)); do
+    eval "url=\"\${$array_name[$(((index + offset) % count))]}\""
+    if until="$(url_unhealthy_until "$url")"; then
+      log "skip unhealthy url=$url until=$until" >&2
+      continue
+    fi
+    printf '%s\n' "$url"
+    return 0
+  done
+
+  log "all urls are temporarily unhealthy; using original random choice" >&2
   eval "printf '%s\n' \"\${$array_name[$index]}\""
 }
 
 select_every_url() {
   local array_name="$1"
-  local now current_slot lock file old_slot old_url new_url
+  local now current_slot lock file old_slot old_url new_url until
   now="$(date +%s)"
   current_slot=$((now / SELECT_EVERY_SECONDS))
   lock="$STATE_DIR/select-every.lock"
@@ -419,9 +448,13 @@ select_every_url() {
   old_slot="$(sed -n '1p' "$file" 2>/dev/null || true)"
   old_url="$(sed -n '2p' "$file" 2>/dev/null || true)"
   if [ "$old_slot" = "$current_slot" ] && [ -n "$old_url" ]; then
-    rmdir "$lock" 2>/dev/null || true
-    printf '%s\n' "$old_url"
-    return 0
+    if until="$(url_unhealthy_until "$old_url")"; then
+      log "select-every replacing unhealthy url=$old_url until=$until" >&2
+    else
+      rmdir "$lock" 2>/dev/null || true
+      printf '%s\n' "$old_url"
+      return 0
+    fi
   fi
 
   new_url="$(pick_random_url "$array_name")" || {
@@ -432,6 +465,80 @@ select_every_url() {
   rmdir "$lock" 2>/dev/null || true
   log "select-every slot=$current_slot seconds=$SELECT_EVERY_SECONDS url=$new_url" >&2
   printf '%s\n' "$new_url"
+}
+
+url_health_key() {
+  local url="$1"
+  if have sha256sum; then
+    printf '%s' "$url" | sha256sum | awk '{print $1}'
+  else
+    printf '%s' "$url" | cksum | awk '{print $1 "-" $2}'
+  fi
+}
+
+url_health_path() {
+  local key
+  mkdir -p "$STATE_DIR/url-health"
+  key="$(url_health_key "$1")"
+  printf '%s/url-health/%s\n' "$STATE_DIR" "$key"
+}
+
+url_unhealthy_until() {
+  local url="$1"
+  local file failures until now
+  [ "${URL_FAILURE_LIMIT:-0}" -gt 0 ] 2>/dev/null || return 1
+  file="$(url_health_path "$url")"
+  [ -f "$file" ] || return 1
+  failures="$(sed -n '1p' "$file" 2>/dev/null || true)"
+  until="$(sed -n '2p' "$file" 2>/dev/null || true)"
+  [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
+  [[ "$until" =~ ^[0-9]+$ ]] || until=0
+  now="$(date +%s)"
+  [ "$failures" -ge "${URL_FAILURE_LIMIT:-0}" ] && [ "$until" -gt "$now" ] || return 1
+  date -d "@$until" '+%F %T' 2>/dev/null || printf '%s\n' "$until"
+}
+
+url_health_lock() {
+  local lock="$STATE_DIR/url-health.lock"
+  while ! mkdir "$lock" 2>/dev/null; do
+    sleep 0.05
+  done
+  printf '%s\n' "$lock"
+}
+
+record_url_success() {
+  local url="$1"
+  local file
+  [ "${URL_FAILURE_LIMIT:-0}" -gt 0 ] 2>/dev/null || return 0
+  file="$(url_health_path "$url")"
+  rm -f "$file"
+}
+
+record_url_failure() {
+  local url="$1"
+  local lock file failures until now
+  [ "${URL_FAILURE_LIMIT:-0}" -gt 0 ] 2>/dev/null || return 0
+  lock="$(url_health_lock)"
+  file="$(url_health_path "$url")"
+  failures="$(sed -n '1p' "$file" 2>/dev/null || true)"
+  until="$(sed -n '2p' "$file" 2>/dev/null || true)"
+  [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
+  [[ "$until" =~ ^[0-9]+$ ]] || until=0
+  now="$(date +%s)"
+  if [ "$until" -gt 0 ] && [ "$until" -le "$now" ]; then
+    failures=0
+  fi
+  failures=$((failures + 1))
+  if [ "$failures" -ge "${URL_FAILURE_LIMIT:-0}" ]; then
+    until=$((now + URL_COOLDOWN_SECONDS))
+    printf '%s\n%s\n' "$failures" "$until" > "$file"
+    rmdir "$lock" 2>/dev/null || true
+    log "url marked unhealthy failures=$failures cooldown=${URL_COOLDOWN_SECONDS}s url=$url"
+    return 0
+  fi
+  printf '%s\n0\n' "$failures" > "$file"
+  rmdir "$lock" 2>/dev/null || true
+  log "url failure count=$failures limit=${URL_FAILURE_LIMIT:-0} url=$url"
 }
 
 sleep_between() {
@@ -567,6 +674,12 @@ wget_download() {
     bytes="$(tr -dc '0-9' < "$tmp" 2>/dev/null || printf '0')"
     rm -f "$tmp"
     if [ "$pipe_status" -ne 0 ] && [ "$pipe_status" -ne 141 ]; then
+      if [ "$bytes" -gt 0 ]; then
+        counter_add "$bytes"
+        log "download partial tool=wget status=$pipe_status bytes=$bytes total=$(counter_read) url=$url"
+        rm -f "$err"
+        return 0
+      fi
       log "download failed tool=wget url=$url status=$pipe_status"
       [ -s "$err" ] && sed 's/^/[wget] /' "$err" >> "$LOG_FILE"
       rm -f "$err"
@@ -667,6 +780,11 @@ download_worker() {
     do_download "$url"
     result=$?
     [ "$result" -eq 2 ] && break
+    if [ "$result" -eq 0 ]; then
+      record_url_success "$url"
+    else
+      record_url_failure "$url"
+    fi
     time_reached && break
     [ "$result" -ne 0 ] && sleep_after_error
     iter=$((iter + 1))
@@ -715,6 +833,8 @@ validate_config() {
   [[ "$JITTER" =~ ^[0-9]+$ ]] || die "JITTER must be seconds"
   [[ "$ERROR_SLEEP" =~ ^[0-9]+$ ]] || die "ERROR_SLEEP must be seconds"
   [[ "$SELECT_EVERY_SECONDS" =~ ^[0-9]+$ ]] || die "SELECT_EVERY_SECONDS must be seconds"
+  [[ "$URL_FAILURE_LIMIT" =~ ^[0-9]+$ ]] || die "URL_FAILURE_LIMIT must be a non-negative integer"
+  [[ "$URL_COOLDOWN_SECONDS" =~ ^[0-9]+$ ]] && [ "$URL_COOLDOWN_SECONDS" -gt 0 ] || die "URL_COOLDOWN_SECONDS must be positive seconds"
   [ -z "$MAX_BYTES" ] || parse_size "$MAX_BYTES" >/dev/null || die "invalid MAX_BYTES: $MAX_BYTES"
   [ -z "$UPLOAD_CHUNK" ] || parse_size "$UPLOAD_CHUNK" >/dev/null || die "invalid UPLOAD_CHUNK: $UPLOAD_CHUNK"
 }
@@ -723,6 +843,7 @@ runner() {
   validate_config
   counter_init
   rm -f "$STATE_DIR/select-every.current"
+  rm -rf "$STATE_DIR/url-health"
   split_urls "$(build_download_urls_text)" DOWNLOAD_TARGETS
   split_urls "$UPLOAD_URLS" UPLOAD_TARGETS
 
@@ -913,6 +1034,8 @@ parse_args() {
       --max-bytes) MAX_BYTES="${2:-}"; shift 2 ;;
       --max-seconds) MAX_SECONDS="${2:-}"; shift 2 ;;
       --select-every) SELECT_EVERY_SECONDS="${2:-}"; shift 2 ;;
+      --failure-limit) URL_FAILURE_LIMIT="${2:-}"; shift 2 ;;
+      --failure-cooldown) URL_COOLDOWN_SECONDS="${2:-}"; shift 2 ;;
       --window-seconds) RANDOM_WINDOW_SECONDS="${2:-}"; shift 2 ;;
       --run-seconds) RANDOM_RUN_SECONDS="${2:-}"; shift 2 ;;
       --rate-limit) RATE_LIMIT="${2:-}"; shift 2 ;;
